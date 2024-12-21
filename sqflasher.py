@@ -10,23 +10,20 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 def get_esptool_path():
-    """Locate the esptool.py script."""
-    # 1. User-defined path (modify this as needed)
-    user_defined_path = "/Users/living/code/siliqs_flasher/.venv/bin/esptool.py"
-    if os.path.exists(user_defined_path):
-        return user_defined_path
+    """定位打包的 esptool.py 或系統中的 esptool.py"""
+    if getattr(sys, 'frozen', False):
+        # 當應用程式是由 PyInstaller 打包時
+        base_path = sys._MEIPASS  # PyInstaller 提供的臨時目錄
+        esptool_path = os.path.join(base_path, "esptool.py")
+        if os.path.exists(esptool_path):
+            return esptool_path
+    else:
+        # 在開發或虛擬環境中執行
+        esptool_path = "/Users/living/code/siliqs_flasher/.venv/bin/esptool.py"
+        if os.path.exists(esptool_path):
+            return esptool_path
 
-    # 2. Check system PATH
-    esptool_path = shutil.which("esptool.py")
-    if esptool_path:
-        return esptool_path
-
-    # 3. Use bundled esptool.py (if packaged with the app)
-    bundled_path = os.path.join(os.path.dirname(__file__), "esptool.py")
-    if os.path.exists(bundled_path):
-        return bundled_path
-
-    raise FileNotFoundError("esptool.py not found. Please install it or specify its path.")
+    raise FileNotFoundError("找不到 esptool.py，請確認已正確打包或安裝。")
 
 
 class FlashThread(QThread):
