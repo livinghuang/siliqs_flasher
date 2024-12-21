@@ -1,6 +1,5 @@
 import sys
 import os
-import shutil
 import subprocess
 import serial.tools.list_ports
 from PyQt6.QtWidgets import (
@@ -8,43 +7,58 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 
-
 def get_esptool_path():
-    """定位打包的 esptool.py 或系統中的 esptool.py"""
+    """Locate the renamed esptool_executable.py."""
     if getattr(sys, 'frozen', False):
-        # 當應用程式是由 PyInstaller 打包時
-        base_path = sys._MEIPASS  # PyInstaller 提供的臨時目錄
-        esptool_path = os.path.join(base_path, "esptool.py")
+        base_path = sys._MEIPASS
+        esptool_path = os.path.join(base_path, "esptool_executable.py")
         if os.path.exists(esptool_path):
             return esptool_path
     else:
-        # 在開發或虛擬環境中執行
-        esptool_path = "/Users/living/code/siliqs_flasher/.venv/bin/esptool.py"
+        esptool_path = "/Users/living/code/siliqs_flasher/.venv/bin/esptool_executable.py"
         if os.path.exists(esptool_path):
             return esptool_path
 
-    raise FileNotFoundError("找不到 esptool.py，請確認已正確打包或安裝。")
+    raise FileNotFoundError("找不到 esptool_executable.py，請確認已正確打包或安裝。")
+
 
 
 class FlashThread(QThread):
     """Thread to handle the ESP32 flashing process."""
     output_signal = pyqtSignal(str)
 
-    def __init__(self, chip_type: str, port: str, firmware: str):
+    def __init__(self, chip_type, port, baud_rate, firmware, additional_args):
         super().__init__()
         self.chip_type = chip_type
         self.port = port
+        self.baud_rate = baud_rate
         self.firmware = firmware
+        self.additional_args = additional_args
         self.esptool_path = get_esptool_path()
 
     def run(self):
         try:
+            command = [
+                self.esptool_path,
+                "--chip", self.chip_type,
+                "--port", self.port,
+                "--baud", self.baud_rate,
+                "--before", "default_reset",
+                "--after", "hard_reset",
+                "write_flash", "0x0", self.firmware
+            ]
+
+            # Add any additional arguments
+            if self.additional_args:
+                command.extend(self.additional_args.split())
+
             process = subprocess.Popen(
-                [self.esptool_path, "--chip", self.chip_type, "--port", self.port, "write_flash", "0x1000", self.firmware],
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
+
             # Emit output line-by-line
             for line in process.stdout:
                 self.output_signal.emit(line.strip())
@@ -76,6 +90,19 @@ class ESP32Flasher(QWidget):
         self.refresh_button.clicked.connect(self.refresh_serial_ports)
         layout.addWidget(self.refresh_button)
 
+        # Baud Rate
+        self.baud_label = QLabel("波特率 (Baud Rate):")
+        layout.addWidget(self.baud_label)
+        self.baud_input = QLineEdit("921600")
+        layout.addWidget(self.baud_input)
+
+        # Chip Type Selector
+        self.chip_label = QLabel("晶片類型 (Chip Type):")
+        layout.addWidget(self.chip_label)
+        self.chip_selector = QComboBox()
+        self.chip_selector.addItems(["esp32", "esp32c3", "esp32s3"])
+        layout.addWidget(self.chip_selector)
+
         # Firmware File Selector
         self.file_label = QLabel("韌體檔案 (Firmware File):")
         layout.addWidget(self.file_label)
@@ -85,12 +112,26 @@ class ESP32Flasher(QWidget):
         self.browse_button.clicked.connect(self.browse_file)
         layout.addWidget(self.browse_button)
 
-        # Chip Type Selector
-        self.chip_label = QLabel("晶片類型 (Chip Type):")
-        layout.addWidget(self.chip_label)
-        self.chip_selector = QComboBox()
-        self.chip_selector.addItems(["esp32", "esp32c3", "esp32s3"])
-        layout.addWidget(self.chip_selector)
+        # Flash Mode Selector
+        self.flash_mode_label = QLabel("Flash Mode:")
+        layout.addWidget(self.flash_mode_label)
+        self.flash_mode_selector = QComboBox()
+        self.flash_mode_selector.addItems(["keep", "qio", "dio", "qout", "dout"])
+        layout.addWidget(self.flash_mode_selector)
+
+        # Flash Frequency Selector
+        self.flash_freq_label = QLabel("Flash Frequency:")
+        layout.addWidget(self.flash_freq_label)
+        self.flash_freq_selector = QComboBox()
+        self.flash_freq_selector.addItems(["keep", "40m", "26m", "20m", "80m"])
+        layout.addWidget(self.flash_freq_selector)
+
+        # Flash Size Selector
+        self.flash_size_label = QLabel("Flash Size:")
+        layout.addWidget(self.flash_size_label)
+        self.flash_size_selector = QComboBox()
+        self.flash_size_selector.addItems(["keep", "1MB", "2MB", "4MB", "8MB", "16MB"])
+        layout.addWidget(self.flash_size_selector)
 
         # Flash Button
         self.flash_button = QPushButton("開始燒錄 (Flash ESP32)")
@@ -128,8 +169,15 @@ class ESP32Flasher(QWidget):
         else:
             port = ""
 
-        firmware = self.file_input.text()
+        baud_rate = self.baud_input.text()
         chip_type = self.chip_selector.currentText()
+        firmware = self.file_input.text()
+        flash_mode = self.flash_mode_selector.currentText()
+        flash_freq = self.flash_freq_selector.currentText()
+        flash_size = self.flash_size_selector.currentText()
+
+        # Construct additional arguments based on user selections
+        additional_args = f"--flash_mode {flash_mode} --flash_freq {flash_freq} --flash_size {flash_size}"
 
         if not port or not firmware:
             self.output_text.append("錯誤：請指定串口和韌體檔案！")
@@ -139,12 +187,12 @@ class ESP32Flasher(QWidget):
         self.output_text.append("開始燒錄...")
 
         # Start Flashing Thread
-        self.flash_thread = FlashThread(chip_type, port, firmware)
+        self.flash_thread = FlashThread(chip_type, port, baud_rate, firmware, additional_args)
         self.flash_thread.output_signal.connect(self.update_output)
         self.flash_thread.finished.connect(self.flash_done)
         self.flash_thread.start()
 
-    def update_output(self, text: str):
+    def update_output(self, text):
         """Update the output log with text."""
         self.output_text.append(text)
 
